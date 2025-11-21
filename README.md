@@ -3,15 +3,13 @@
 ### **AI-Powered Pull Request Reviewer for GitHub**
 
 <p align="center">
-  <img src=" " width="150"/>
+  <img src="https://github.com/user-attachments/assets/cd861495-a460-43df-bfd7-4fdf3aabfdc2" width="250" alt="PR Guardian AI Logo">
 </p>
 
+
 <p align="center">
-
 <!-- Badges -->
-
 <a href="#"><img src="https://img.shields.io/badge/Status-Active-success?style=for-the-badge"></a> <a href="#"><img src="https://img.shields.io/badge/AI%20Powered-OpenAI-blue?style=for-the-badge&logo=openai"></a> <a href="#"><img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge&logo=fastapi"></a> <a href="#"><img src="https://img.shields.io/badge/GitHub-App-black?style=for-the-badge&logo=github"></a> <a href="#"><img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge"></a>
-
 </p>
 
 ---
