@@ -134,7 +134,7 @@ async def review_diff_with_ai(diff_text: str, pr_title: str, pr_body: str | None
         "- Point out potential bugs, security risks, and performance issues.\n"
         "- Suggest improvements and best practices.\n"
         "- If everything looks good, say that explicitly.\n"
-        "- Answer in English and use Markdown with bullet points."
+        "- Answer in German (Swiss style german but not schweizerdeutsch) and use Markdown with bullet points."
     )
 
     user_prompt = f"""
@@ -165,7 +165,16 @@ Git Diff:
                 request_params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
                 logger.info(">>> Disabled thinking mode for Z.AI API")
 
+            logger.info(">>> Calling AI API...")
             resp = openai_client.chat.completions.create(**request_params)
+
+            # Log the full response structure for debugging
+            logger.info(f">>> Full API response: {resp}")
+            logger.info(f">>> Response choices: {resp.choices}")
+            logger.info(f">>> First choice message: {resp.choices[0].message}")
+            logger.info(f">>> Message content field: '{resp.choices[0].message.content}'")
+            if hasattr(resp.choices[0].message, 'reasoning_content'):
+                logger.info(f">>> Message reasoning_content field length: {len(resp.choices[0].message.reasoning_content or '')}")
 
             # Check if response has choices
             if not resp.choices:
@@ -182,12 +191,14 @@ Git Diff:
                 # Last resort: check reasoning_content
                 if hasattr(message, 'reasoning_content') and message.reasoning_content:
                     logger.warning("Falling back to reasoning_content - thinking mode may not be disabled properly")
+                    logger.info(f">>> Using reasoning_content (first 200 chars): {message.reasoning_content[:200]}")
                     content = message.reasoning_content
                 else:
                     return "_Error: AI returned empty content._"
 
             content = content.strip()
-            logger.info(f">>> AI response received, length: {len(content)} chars")
+            logger.info(f">>> Final content length: {len(content)} chars")
+            logger.info(f">>> Final content preview: {content[:200]}")
             return content
         except Exception as e:
             logger.error(f"AI API error: {e}")
