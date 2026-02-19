@@ -125,6 +125,9 @@ async def review_diff_with_ai(diff_text: str, pr_title: str, pr_body: str | None
     max_chars = 16000
     short_diff = diff_text[:max_chars]
 
+    logger.info(f">>> Sending diff to AI (model: {settings.openai_model_id}, base_url: {settings.openai_base_url})")
+    logger.info(f">>> Diff length: {len(diff_text)} chars, truncated to: {len(short_diff)} chars")
+
     system_prompt = (
         "You are an expert senior code reviewer. "
         "Given a Git diff, you will provide a concise review:\n"
@@ -145,16 +148,34 @@ Git Diff:
 """
 
     def _call_openai() -> str:
-        resp = openai_client.chat.completions.create(
-            model=settings.openai_model_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-            max_tokens=700,
-        )
-        return resp.choices[0].message.content.strip()
+        try:
+            logger.info(">>> Calling OpenAI API...")
+            resp = openai_client.chat.completions.create(
+                model=settings.openai_model_id,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                max_tokens=700,
+            )
+
+            # Check if response has choices
+            if not resp.choices:
+                logger.error("OpenAI returned empty choices array")
+                return "_Error: AI returned no response. Check API configuration._"
+
+            content = resp.choices[0].message.content
+            if not content:
+                logger.error("OpenAI returned empty content")
+                return "_Error: AI returned empty content._"
+
+            content = content.strip()
+            logger.info(f">>> OpenAI response received, length: {len(content)} chars")
+            return content
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}")
+            raise
 
     review_text = await asyncio.to_thread(_call_openai)
     return review_text
@@ -230,9 +251,16 @@ async def webhook(
         # Review with AI
         try:
             review = await review_diff_with_ai(diff_text, pr_title, pr_body)
+            logger.info(f">>> AI review generated (length: {len(review)} chars)")
+            logger.debug(f">>> Review content: {review[:200]}...")
         except Exception as e:
             logger.exception("Failed to generate AI review")
             raise HTTPException(status_code=500, detail="Failed to generate AI review") from e
+
+        # Validate review content
+        if not review or not review.strip():
+            logger.error("AI returned empty review!")
+            review = "_Unable to generate review. Please check the API configuration._"
 
         # Create bot comment with clear identification
         bot_avatar = "🤖"
