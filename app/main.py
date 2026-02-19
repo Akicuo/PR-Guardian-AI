@@ -160,27 +160,24 @@ Git Diff:
                 max_tokens=700,
             )
 
-            # Log the full response structure for debugging
-            logger.info(f">>> Full API response: {resp}")
-
             # Check if response has choices
             if not resp.choices:
                 logger.error("OpenAI returned empty choices array")
                 return "_Error: AI returned no response. Check API configuration._"
 
-            # Try to get content with fallback
             first_choice = resp.choices[0]
-            logger.info(f">>> First choice: {first_choice}")
-            logger.info(f">>> Message in choice: {first_choice.message}")
+            message = first_choice.message
 
-            content = first_choice.message.content
+            # Z.AI uses 'reasoning_content' field instead of 'content'
+            # Try reasoning_content first (for Z.AI GLM models), fall back to content
+            content = getattr(message, 'reasoning_content', None) or message.content
+
             if not content:
-                logger.error("OpenAI returned empty content")
-                logger.error(f">>> Response model dump: {resp.model_dump()}")
-                return "_Error: AI returned empty content. API response structure may be different._"
+                logger.error("OpenAI returned empty content (both content and reasoning_content)")
+                return "_Error: AI returned empty content._"
 
             content = content.strip()
-            logger.info(f">>> OpenAI response received, length: {len(content)} chars")
+            logger.info(f">>> AI response received, length: {len(content)} chars")
             return content
         except Exception as e:
             logger.error(f"OpenAI API error: {e}")
