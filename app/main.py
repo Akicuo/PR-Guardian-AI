@@ -28,7 +28,10 @@ logging.basicConfig(
 logger = logging.getLogger("pr-guardian")
 
 # OpenAI client
-openai_client = OpenAI(api_key=settings.openai_api_key)
+client = OpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    base_url="https://api.z.ai/api/coding/paas/v4"   # Z.AI GLM Coding Plan endpoint
+)
 
 # FastAPI app
 app = FastAPI(title="PR Guardian AI Webhook")
