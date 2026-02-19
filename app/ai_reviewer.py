@@ -44,6 +44,6 @@ async def generate_ai_review(pr_title: str, pr_body: str, files: list) -> str:
             {"role": "user", "content": text},
         ],
         temperature=0.2,
-        max_tokens=700,
+        max_tokens=140000,
     )
     return response.choices[0].message.content.strip()
