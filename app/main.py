@@ -3,11 +3,9 @@ import hashlib
 import hmac
 import json
 import logging
-import time
 from typing import Any, Dict
 
 import httpx
-import jwt
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from openai import OpenAI
@@ -28,9 +26,9 @@ logging.basicConfig(
 logger = logging.getLogger("pr-guardian")
 
 # OpenAI client
-client = OpenAI(
-    api_key=settings.OPENAI_API_KEY,
-    base_url="https://api.z.ai/api/coding/paas/v4"   # Z.AI GLM Coding Plan endpoint
+openai_client = OpenAI(
+    api_key=settings.openai_api_key,
+    base_url=settings.openai_base_url
 )
 
 # FastAPI app
@@ -48,11 +46,15 @@ def verify_github_signature(
 ) -> None:
     """
     Verify X-Hub-Signature-256 from GitHub webhook.
-
+    Skips verification if secret is not configured (PAT mode).
     """
-    if not signature_header:
-        logger.warning("Missing X-Hub-Signature-256 header - skipping verification in DEV mode")
+    if not secret:
+        logger.info("No webhook secret configured - skipping signature verification")
         return
+
+    if not signature_header:
+        logger.warning("Missing X-Hub-Signature-256 header")
+        raise HTTPException(status_code=400, detail="Missing signature header")
 
     try:
         sha_name, signature = signature_header.split("=")
@@ -70,90 +72,47 @@ def verify_github_signature(
         raise HTTPException(status_code=401, detail="Invalid signature")
 
 
-def generate_app_jwt() -> str:
+def get_github_token() -> str:
     """
-    Generate JWT for GitHub App using RS256.
+    Get the GitHub Personal Access Token.
     """
-    app_id = settings.github_app_id
-    private_key_path = settings.github_private_key_path
-
-    with open(private_key_path, "r", encoding="utf-8") as f:
-        private_key = f.read()
-
-    now = int(time.time())
-    payload = {
-        "iat": now - 60,
-        "exp": now + 9 * 60,
-        "iss": app_id,
-    }
-
-    token = jwt.encode(payload, private_key, algorithm="RS256")
-    return token
+    return settings.github_token
 
 
-async def create_installation_token(installation_id: int) -> str:
+async def fetch_pr_diff(diff_url: str) -> str:
     """
-    Create an installation access token for a given installation_id.
+    Fetch PR diff text using GitHub PAT.
     """
-    app_jwt = generate_app_jwt()
-
-    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-    headers = {
-        "Authorization": f"Bearer {app_jwt}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "PR-Guardian-AI",
-    }
-
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(url, headers=headers)
-        logger.info(f"Installation token status: {resp.status_code}")
-        resp.raise_for_status()
-        data = resp.json()
-        return data["token"]
-
-
-async def fetch_pr_diff(diff_url: str, token: str) -> str:
-    """
-    Fetch PR diff text.
-    """
+    token = get_github_token()
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3.diff",
-        "User-Agent": "PR-Guardian-AI",
+        "User-Agent": "PR-Guardian-AI/1.0",
     }
 
     logger.info(f"Fetching diff from: {diff_url}")
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         resp = await client.get(diff_url, headers=headers)
-        logger.info(f"First diff fetch status: {resp.status_code}")
-
-        if resp.status_code in (301, 302, 303, 307, 308):
-            redirect_url = resp.headers.get("Location")
-            logger.info(f"Redirecting to: {redirect_url}")
-            if not redirect_url:
-                resp.raise_for_status()
-
-            resp = await client.get(redirect_url, headers=headers)
-            logger.info(f"Second diff fetch status: {resp.status_code}")
-
+        logger.info(f"Diff fetch status: {resp.status_code}")
         resp.raise_for_status()
         return resp.text
 
 
-async def post_pr_comment(comments_url: str, token: str, body: str) -> None:
+async def post_pr_comment(comments_url: str, body: str) -> None:
     """
-    Post a comment on the PR using the issue comments URL.
+    Post a comment on the PR using the issue comments URL with GitHub PAT.
     """
+    token = get_github_token()
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
-        "User-Agent": "PR-Guardian-AI",
+        "User-Agent": f"PR-Guardian-AI/1.0 (+{settings.bot_name})",
     }
 
     payload = {"body": body}
 
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(comments_url, headers=headers, json=payload)
         logger.info(f"Post comment status: {resp.status_code}")
         resp.raise_for_status()
@@ -187,7 +146,7 @@ Git Diff:
 
     def _call_openai() -> str:
         resp = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=settings.openai_model_id,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -253,29 +212,17 @@ async def webhook(
         diff_url = pr.get("diff_url")
         pr_title = pr.get("title", "")
         pr_body = pr.get("body", "")
+        pr_number = pr.get("number", "")
+        repo_full_name = payload.get("repository", {}).get("full_name", "")
 
-        logger.info(f">>> PR comments_url: {comments_url}")
+        logger.info(f">>> PR: {repo_full_name}#{pr_number}")
+        logger.info(f">>> Title: {pr_title}")
+        logger.info(f">>> comments_url: {comments_url}")
         logger.info(f">>> diff_url: {diff_url}")
-
-        installation = payload.get("installation") or {}
-        installation_id = installation.get("id")
-        if not installation_id:
-            logger.error("No installation id in payload")
-            raise HTTPException(status_code=400, detail="Missing installation id")
-
-        logger.info(f">>> Installation ID: {installation_id}")
-        logger.info(">>> Creating installation access token...")
-
-        try:
-            gh_token = await create_installation_token(installation_id)
-            logger.info(">>> Installation token created.")
-        except Exception as e:
-            logger.exception("Failed to create installation token")
-            raise HTTPException(status_code=500, detail="Failed to create installation token") from e
 
         # Fetch diff
         try:
-            diff_text = await fetch_pr_diff(diff_url, gh_token)
+            diff_text = await fetch_pr_diff(diff_url)
         except Exception as e:
             logger.exception("Failed to fetch PR diff")
             raise HTTPException(status_code=500, detail="Failed to fetch PR diff") from e
@@ -287,20 +234,27 @@ async def webhook(
             logger.exception("Failed to generate AI review")
             raise HTTPException(status_code=500, detail="Failed to generate AI review") from e
 
-        comment_body = (
-            "🤖 **PR Guardian AI Review**\n\n"
-            f"{review}\n\n"
-            "---\n"
-            "_Automated review powered by OpenAI_"
-        )
+        # Create bot comment with clear identification
+        bot_avatar = "🤖"
+        comment_body = f"""{bot_avatar} **{settings.bot_name}** - Automated Code Review
+---
+
+**This is an automated comment posted by a bot, not a human user.**
+
+{review}
+
+---
+
+*Powered by OpenAI • Bot: {settings.bot_name}*"""
 
         # Post comment
         try:
-            await post_pr_comment(comments_url, gh_token, comment_body)
+            await post_pr_comment(comments_url, comment_body)
         except Exception as e:
             logger.exception("Failed to post PR comment")
             raise HTTPException(status_code=500, detail="Failed to post PR comment") from e
 
+        logger.info(f">>> Successfully posted AI review to {repo_full_name}#{pr_number}")
         return JSONResponse({"msg": "AI review posted"})
 
     logger.info(f"Unhandled event: {x_github_event}")

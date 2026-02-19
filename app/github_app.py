@@ -1,41 +1,37 @@
-import time
-import jwt
 import httpx
-from pathlib import Path
 
 from .config import get_settings
 
 GITHUB_API_BASE = "https://api.github.com"
 
-def _load_private_key() -> str:
+
+def get_github_token() -> str:
+    """Get the GitHub Personal Access Token from settings."""
     settings = get_settings()
-    return Path(settings.github_app_private_key_path).read_text()
+    return settings.github_token
 
-def generate_app_jwt() -> str:
-    settings = get_settings()
-    now = int(time.time())
-    payload = {"iat": now-60, "exp": now+600, "iss": settings.github_app_id}
-    private_key = _load_private_key()
-    return jwt.encode(payload, private_key, algorithm="RS256")
 
-async def get_installation_access_token(installation_id: int) -> str:
-    jwt_token = generate_app_jwt()
-    url = f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens"
-    async with httpx.AsyncClient() as client:
-        r = await client.post(url, headers={
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github+json"
-        })
-        r.raise_for_status()
-        return r.json()["token"]
-
-async def github_request(method: str, url: str, token: str, **kwargs):
+async def github_request(method: str, url: str, **kwargs):
+    """
+    Make an authenticated request to GitHub API using PAT.
+    """
+    token = get_github_token()
     headers = kwargs.pop("headers", {})
     headers.update({
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
+        "User-Agent": "PR-Guardian-AI/1.0",
     })
-    async with httpx.AsyncClient() as client:
-        r = await client.request(method, url, headers=headers, **kwargs)
-        r.raise_for_status()
-        return r
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.request(method, url, headers=headers, **kwargs)
+        response.raise_for_status()
+        return response
+
+
+async def get_pr_details(repo_owner: str, repo_name: str, pr_number: int) -> Dict:
+    """
+    Get PR details from GitHub API.
+    """
+    url = f"{GITHUB_API_BASE}/repos/{repo_owner}/{repo_name}/pulls/{pr_number}"
+    response = await github_request("GET", url)
+    return response.json()

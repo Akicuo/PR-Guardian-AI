@@ -1,0 +1,23 @@
+# Railway Configuration for PR Guardian AI
+# https://railway.app/docs/reference/ railwaytoml
+
+[build]
+# Build command - Railway will auto-detect Python, but we can be explicit
+builder = "DOCKERFILE"
+# Or use NIXPACKS for Python apps (recommended)
+# builder = "NIXPACKS"
+
+[deploy]
+# Health check endpoint
+healthcheckPath = "/"
+# Health check interval (seconds)
+healthcheckTimeout = 300
+# Number of restarts on failure
+restartPolicyType = "ON_FAILURE"
+
+[env]
+# Default port for FastAPI
+PORT = "8000"
+
+# Python environment
+PYTHON_VERSION = "3.11"
