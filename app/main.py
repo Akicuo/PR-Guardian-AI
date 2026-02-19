@@ -149,15 +149,23 @@ Git Diff:
 
     def _call_openai() -> str:
         try:
-            resp = openai_client.chat.completions.create(
-                model=settings.openai_model_id,
-                messages=[
+            # Build request with thinking mode disabled for Z.AI to get content in standard field
+            request_params = {
+                "model": settings.openai_model_id,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.2,
-                max_tokens=700,
-            )
+                "temperature": 0.2,
+                "max_tokens": 700,
+            }
+
+            # Disable thinking mode for Z.AI/GLM to get response in content field
+            if "z.ai" in settings.openai_base_url.lower():
+                request_params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+                logger.info(">>> Disabled thinking mode for Z.AI API")
+
+            resp = openai_client.chat.completions.create(**request_params)
 
             # Check if response has choices
             if not resp.choices:
@@ -166,16 +174,17 @@ Git Diff:
 
             message = resp.choices[0].message
 
-            # For Z.AI reasoning models (GLM-4.7), reasoning_content IS the main response
-            # For standard OpenAI, use content field
-            if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                content = message.reasoning_content
-            else:
-                content = message.content
+            # Use the standard content field (should contain final answer with thinking disabled)
+            content = message.content
 
             if not content:
-                logger.error("AI returned empty content")
-                return "_Error: AI returned empty content._"
+                logger.error("AI returned empty content field (thinking mode may still be enabled)")
+                # Last resort: check reasoning_content
+                if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    logger.warning("Falling back to reasoning_content - thinking mode may not be disabled properly")
+                    content = message.reasoning_content
+                else:
+                    return "_Error: AI returned empty content._"
 
             content = content.strip()
             logger.info(f">>> AI response received, length: {len(content)} chars")
