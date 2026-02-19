@@ -149,7 +149,6 @@ Git Diff:
 
     def _call_openai() -> str:
         try:
-            logger.info(">>> Calling OpenAI API...")
             resp = openai_client.chat.completions.create(
                 model=settings.openai_model_id,
                 messages=[
@@ -162,25 +161,27 @@ Git Diff:
 
             # Check if response has choices
             if not resp.choices:
-                logger.error("OpenAI returned empty choices array")
-                return "_Error: AI returned no response. Check API configuration._"
+                logger.error("AI returned empty choices array")
+                return "_Error: AI returned no response._"
 
-            first_choice = resp.choices[0]
-            message = first_choice.message
+            message = resp.choices[0].message
 
-            # Z.AI uses 'reasoning_content' field instead of 'content'
-            # Try reasoning_content first (for Z.AI GLM models), fall back to content
-            content = getattr(message, 'reasoning_content', None) or message.content
+            # For Z.AI reasoning models (GLM-4.7), reasoning_content IS the main response
+            # For standard OpenAI, use content field
+            if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                content = message.reasoning_content
+            else:
+                content = message.content
 
             if not content:
-                logger.error("OpenAI returned empty content (both content and reasoning_content)")
+                logger.error("AI returned empty content")
                 return "_Error: AI returned empty content._"
 
             content = content.strip()
             logger.info(f">>> AI response received, length: {len(content)} chars")
             return content
         except Exception as e:
-            logger.error(f"OpenAI API error: {e}")
+            logger.error(f"AI API error: {e}")
             raise
 
     review_text = await asyncio.to_thread(_call_openai)
