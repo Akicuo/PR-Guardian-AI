@@ -245,7 +245,7 @@ async def webhook(
 
 ---
 
-*Powered by OpenAI • Bot: {settings.bot_name}*"""
+*Powered by Z.AI • Bot: {settings.bot_name}*"""
 
         # Post comment
         try:
