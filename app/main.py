@@ -157,7 +157,7 @@ Git Diff:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0.2,
-                "max_tokens": 700,
+                "max_tokens": 16000,
             }
 
             # Disable thinking mode for Z.AI/GLM to get response in content field
