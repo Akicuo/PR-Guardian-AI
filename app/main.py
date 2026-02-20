@@ -262,6 +262,7 @@ async def webhook(
         pr_body = pr.get("body", "")
         pr_number = pr.get("number", "")
         repo_full_name = payload.get("repository", {}).get("full_name", "")
+        repo_owner, repo_name = repo_full_name.split("/", 1) if "/" in repo_full_name else (repo_full_name, "")
 
         logger.info(f">>> PR: {repo_full_name}#{pr_number}")
         logger.info(f">>> Title: {pr_title}")
