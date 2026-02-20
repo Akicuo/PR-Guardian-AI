@@ -3,14 +3,22 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime
 from typing import Any, Dict
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from openai import OpenAI
 
 from .config import get_settings
+from .core.database import get_db, init_db, close_db
+from .api import auth, repositories, dashboard
+from .models import Repository, ReviewHistory, User
 
 # ==========================
 # Settings & Logging
@@ -32,7 +40,59 @@ openai_client = OpenAI(
 )
 
 # FastAPI app
-app = FastAPI(title="PR Guardian AI Webhook")
+app = FastAPI(title="PR Guardian AI")
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Setup templates
+templates = Jinja2Templates(directory="app/templates")
+
+# Include API routers
+app.include_router(auth.router)
+app.include_router(repositories.router)
+app.include_router(dashboard.router)
+
+
+# ==========================
+# Lifecycle Events
+# ==========================
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database and run startup tasks"""
+    await init_db()
+    logger.info("Database initialized")
+
+    # Optionally run migrations in development
+    if settings.log_level == "debug":
+        logger.info("Running database migrations in debug mode")
+        try:
+            from alembic import command
+            from alembic.config import Config
+            from pathlib import Path
+
+            # Create Alembic config
+            alembic_dir = Path(__file__).parent.parent / "alembic"
+            if alembic_dir.exists():
+                alembic_cfg = Config()
+                alembic_cfg.set_main_option("script_location", str(alembic_dir))
+                alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+
+                # Run migrations
+                command.upgrade(alembic_cfg, "head")
+                logger.info("Database migrations completed")
+        except Exception as e:
+            logger.warning(f"Could not run migrations: {e}")
+
+    logger.info("Application started")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connections on shutdown"""
+    await close_db()
+    logger.info("Application shutdown")
 
 
 # ==========================
@@ -212,9 +272,42 @@ Git Diff:
 # Routes
 # ==========================
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "app": "PR Guardian AI"}
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    """Landing page"""
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request, db: AsyncSession = Depends(get_db)):
+    """User dashboard"""
+    try:
+        # Try to get current user
+        current_user = await auth.get_current_user(request, db)
+    except HTTPException:
+        # Not authenticated, redirect to login
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/auth/login", status_code=303)
+
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "current_user": current_user
+    })
+
+
+@app.get("/repositories", response_class=HTMLResponse)
+async def repositories_page(request: Request, db: AsyncSession = Depends(get_db)):
+    """Repository management page"""
+    try:
+        current_user = await auth.get_current_user(request, db)
+    except HTTPException:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/auth/login", status_code=303)
+
+    return templates.TemplateResponse("repositories.html", {
+        "request": request,
+        "current_user": current_user
+    })
 
 
 @app.post("/webhook")
@@ -222,6 +315,7 @@ async def webhook(
     request: Request,
     x_github_event: str = Header(None, alias="X-GitHub-Event"),
     x_hub_signature_256: str = Header(None, alias="X-Hub-Signature-256"),
+    db: AsyncSession = Depends(get_db),
 ):
     raw_body = await request.body()
 
@@ -256,17 +350,44 @@ async def webhook(
             return JSONResponse({"msg": f"ignored action {action}"})
 
         pr = payload.get("pull_request", {})
+        repository_payload = payload.get("repository", {})
         comments_url = pr.get("comments_url")
         diff_url = pr.get("diff_url")
         pr_title = pr.get("title", "")
         pr_body = pr.get("body", "")
         pr_number = pr.get("number", "")
-        repo_full_name = payload.get("repository", {}).get("full_name", "")
+        repo_full_name = repository_payload.get("full_name", "")
+        github_repo_id = repository_payload.get("id", "")
+        pr_author = pr.get("user", {}).get("login", "")
+        pr_url = pr.get("html_url", "")
+        target_branch = pr.get("base", {}).get("ref", "")
 
         logger.info(f">>> PR: {repo_full_name}#{pr_number}")
         logger.info(f">>> Title: {pr_title}")
-        logger.info(f">>> comments_url: {comments_url}")
-        logger.info(f">>> diff_url: {diff_url}")
+        logger.info(f">>> Target branch: {target_branch}")
+
+        # Check if repository is monitored in database
+        result = await db.execute(
+            select(Repository).where(
+                Repository.github_repo_id == github_repo_id,
+                Repository.is_monitored == True
+            )
+        )
+        repository = result.scalar_one_or_none()
+
+        if not repository:
+            logger.info(f">>> Repository {repo_full_name} not monitored, skipping")
+            return JSONResponse({"msg": "repository not monitored"})
+
+        logger.info(f">>> Repository found: user_id={repository.user_id}")
+
+        # Check branch filtering
+        if repository.branches_to_monitor:
+            import json
+            monitored_branches = json.loads(repository.branches_to_monitor)
+            if target_branch not in monitored_branches:
+                logger.info(f">>> Branch {target_branch} not in monitored branches {monitored_branches}, skipping")
+                return JSONResponse({"msg": "branch not monitored"})
 
         # Fetch diff
         try:
@@ -276,13 +397,13 @@ async def webhook(
             raise HTTPException(status_code=500, detail="Failed to fetch PR diff") from e
 
         # Review with AI
+        review = None
         try:
             review = await review_diff_with_ai(diff_text, pr_title, pr_body)
             logger.info(f">>> AI review generated (length: {len(review)} chars)")
-            logger.debug(f">>> Review content: {review[:200]}...")
         except Exception as e:
             logger.exception("Failed to generate AI review")
-            raise HTTPException(status_code=500, detail="Failed to generate AI review") from e
+            review = "_Error: Failed to generate AI review._"
 
         # Validate review content
         if not review or not review.strip():
@@ -312,6 +433,26 @@ async def webhook(
         except Exception as e:
             logger.exception("Failed to post PR comment")
             raise HTTPException(status_code=500, detail="Failed to post PR comment") from e
+
+        # Save review to database
+        try:
+            review_history = ReviewHistory(
+                user_id=repository.user_id,
+                repository_id=repository.id,
+                pr_number=pr_number,
+                pr_title=pr_title,
+                pr_author=pr_author,
+                pr_url=pr_url,
+                review_content=review,
+                ai_model=settings.openai_model_id,
+                status="posted"
+            )
+            db.add(review_history)
+            await db.commit()
+            logger.info(f">>> Review saved to database")
+        except Exception as e:
+            logger.exception("Failed to save review to database")
+            # Don't fail the request if we can't save to DB
 
         logger.info(f">>> Successfully posted AI review to {repo_full_name}#{pr_number}")
         return JSONResponse({"msg": "AI review posted"})

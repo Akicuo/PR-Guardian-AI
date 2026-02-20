@@ -5,3 +5,20 @@ pydantic
 pydantic-settings
 httpx
 openai
+
+# Database
+sqlalchemy[asyncio]
+asyncpg
+alembic
+
+# Authentication & Security
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+
+# Template Rendering
+jinja2
+
+# OAuth
+authlib
+starlette

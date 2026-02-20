@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - PR Guardian AI{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12"
+     x-data="dashboard()" x-init="loadStats()">
+
+    <div class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-900">Dashboard</h1>
+        <p class="text-gray-600 mt-2">Welcome back, {{ current_user.github_login }}!</p>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+        <!-- Total Repos -->
+        <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Monitored Repos</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2" x-text="stats.total_repositories">-</p>
+                </div>
+                <div class="w-12 h-12 bg-brand-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- Active Webhooks -->
+        <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Active Webhooks</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2" x-text="stats.active_webhooks">-</p>
+                </div>
+                <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- Total Reviews -->
+        <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Total Reviews</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2" x-text="stats.total_reviews">-</p>
+                </div>
+                <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- This Month -->
+        <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-sm font-medium text-gray-600">Reviews This Month</p>
+                    <p class="text-3xl font-bold text-gray-900 mt-2" x-text="stats.reviews_this_month">-</p>
+                </div>
+                <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                    <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div class="p-6 border-b border-gray-200">
+            <h2 class="text-xl font-bold text-gray-900">Recent Reviews</h2>
+        </div>
+        <div class="p-6">
+            <!-- Loading state -->
+            <div x-show="loading" class="text-center py-12">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-gray-300 border-t-brand-600"></div>
+                <p class="text-gray-600 mt-4">Loading...</p>
+            </div>
+
+            <!-- Recent reviews list -->
+            <div x-show="!loading">
+                <template x-for="review in stats.recent_reviews" :key="review.id">
+                    <div class="flex items-start space-x-4 py-4 border-b border-gray-100 last:border-0">
+                        <div class="w-10 h-10 bg-brand-100 rounded-full flex items-center justify-center flex-shrink-0">
+                            <svg class="w-5 h-5 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-gray-900" x-text="review.pr_title"></p>
+                            <p class="text-sm text-gray-600" x-text="review.repo_full_name"></p>
+                            <p class="text-xs text-gray-500 mt-1" x-text="formatDate(review.created_at)"></p>
+                        </div>
+                        <span class="px-2 py-1 text-xs rounded-full"
+                              :class="review.status === 'posted' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+                              x-text="review.status"></span>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Empty state -->
+            <div x-show="!loading && stats.recent_reviews.length === 0" class="text-center py-12">
+                <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <p class="text-gray-600">No reviews yet. Connect a repository to get started!</p>
+                <a href="/repositories" class="inline-block mt-4 px-6 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition">
+                    Add Repository
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboard() {
+    return {
+        stats: {
+            total_repositories: 0,
+            active_webhooks: 0,
+            total_reviews: 0,
+            reviews_this_month: 0,
+            recent_reviews: []
+        },
+        loading: true,
+
+        async loadStats() {
+            try {
+                const response = await fetch('/api/dashboard/stats');
+                this.stats = await response.json();
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        formatDate(dateString) {
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+    }
+}
+</script>
+{% endblock %}

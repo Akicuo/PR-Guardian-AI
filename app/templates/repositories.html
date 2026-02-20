@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+
+{% block title %}Repositories - PR Guardian AI{% endblock %}
+
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12"
+     x-data="repositories()" x-init="loadRepositories()">
+
+    <div class="mb-8 flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">Repositories</h1>
+            <p class="text-gray-600 mt-2">Select repositories to monitor</p>
+        </div>
+        <button @click="syncWithGithub()"
+                :disabled="syncing"
+                class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition disabled:opacity-50">
+            <span x-show="!syncing">Sync with GitHub</span>
+            <span x-show="syncing" class="flex items-center">
+                <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Syncing...
+            </span>
+        </button>
+    </div>
+
+    <!-- Search and Filter -->
+    <div class="mb-6 bg-white rounded-xl shadow-sm p-4 border border-gray-200">
+        <div class="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4">
+            <div class="flex-1">
+                <input type="text"
+                       x-model="searchQuery"
+                       placeholder="Search repositories..."
+                       class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent">
+            </div>
+            <div class="flex space-x-2">
+                <button @click="filter = 'all'"
+                        :class="filter === 'all' ? 'bg-brand-100 text-brand-700' : 'bg-gray-100 text-gray-700'"
+                        class="px-4 py-2 rounded-lg transition">
+                    All
+                </button>
+                <button @click="filter = 'monitored'"
+                        :class="filter === 'monitored' ? 'bg-brand-100 text-brand-700' : 'bg-gray-100 text-gray-700'"
+                        class="px-4 py-2 rounded-lg transition">
+                    Monitored
+                </button>
+                <button @click="filter = 'unmonitored'"
+                        :class="filter === 'unmonitored' ? 'bg-brand-100 text-brand-700' : 'bg-gray-100 text-gray-700'"
+                        class="px-4 py-2 rounded-lg transition">
+                    Unmonitored
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Repository List -->
+    <div class="space-y-4">
+        <!-- Loading state -->
+        <div x-show="loading" class="text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-gray-300 border-t-brand-600"></div>
+            <p class="text-gray-600 mt-4">Loading repositories...</p>
+        </div>
+
+        <!-- Repository cards -->
+        <template x-for="repo in filteredRepositories" :key="repo.id">
+            <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200 hover:shadow-md transition">
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <div class="flex items-center space-x-3">
+                            <h3 class="text-lg font-semibold text-gray-900" x-text="repo.full_name"></h3>
+                            <span x-show="repo.private" class="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">Private</span>
+                            <span x-show="repo.monitored" class="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">Monitored</span>
+                        </div>
+                        <p class="text-gray-600 text-sm mt-1" x-text="repo.description || 'No description'"></p>
+
+                        <div x-show="repo.monitored" class="mt-4 flex items-center space-x-4 text-sm">
+                            <span class="text-gray-600">
+                                <strong>Branches:</strong>
+                                <span x-text="repo.branches_to_monitor ? repo.branches_to_monitor.join(', ') : 'All'"></span>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center space-x-3">
+                        <button x-show="!repo.monitored"
+                                @click="startMonitoring(repo)"
+                                class="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 transition">
+                            Start Monitoring
+                        </button>
+                        <button x-show="repo.monitored"
+                                @click="stopMonitoring(repo)"
+                                class="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition">
+                            Stop Monitoring
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- Empty state -->
+        <div x-show="!loading && filteredRepositories.length === 0" class="text-center py-12">
+            <svg class="w-16 h-16 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+            </svg>
+            <p class="text-gray-600" x-text="searchQuery ? 'No repositories found' : 'No repositories available'"></p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function repositories() {
+    return {
+        repositories: [],
+        searchQuery: '',
+        filter: 'all',
+        syncing: false,
+        loading: true,
+
+        get filteredRepositories() {
+            let repos = this.repositories;
+
+            if (this.searchQuery) {
+                const query = this.searchQuery.toLowerCase();
+                repos = repos.filter(repo =>
+                    repo.full_name.toLowerCase().includes(query)
+                );
+            }
+
+            if (this.filter === 'monitored') {
+                repos = repos.filter(repo => repo.monitored);
+            } else if (this.filter === 'unmonitored') {
+                repos = repos.filter(repo => !repo.monitored);
+            }
+
+            return repos;
+        },
+
+        async loadRepositories() {
+            try {
+                const response = await fetch('/api/repositories/');
+                this.repositories = await response.json();
+            } catch (error) {
+                console.error('Failed to load repositories:', error);
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        async syncWithGithub() {
+            this.syncing = true;
+            try {
+                await this.loadRepositories();
+            } finally {
+                this.syncing = false;
+            }
+        },
+
+        async startMonitoring(repo) {
+            try {
+                const response = await fetch(`/api/repositories/${repo.id}/monitor`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ branches: ['main', 'master', 'develop'] })
+                });
+
+                if (response.ok) {
+                    repo.monitored = true;
+                    repo.branches_to_monitor = ['main', 'master', 'develop'];
+                }
+            } catch (error) {
+                console.error('Failed to start monitoring:', error);
+            }
+        },
+
+        async stopMonitoring(repo) {
+            try {
+                const response = await fetch(`/api/repositories/${repo.id}/monitor`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    repo.monitored = false;
+                    repo.branches_to_monitor = [];
+                }
+            } catch (error) {
+                console.error('Failed to stop monitoring:', error);
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

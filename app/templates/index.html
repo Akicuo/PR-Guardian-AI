@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}PR Guardian AI - Automated Code Reviews{% endblock %}
+
+{% block head %}
+<style>
+    [x-cloak] { display: none !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="relative overflow-hidden">
+    <!-- Hero Section -->
+    <div class="relative bg-gradient-to-br from-brand-50 via-white to-brand-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 md:py-32">
+            <div class="text-center animate-fade-in">
+                <div class="inline-flex items-center space-x-2 bg-brand-100 text-brand-700 px-4 py-2 rounded-full text-sm font-medium mb-8">
+                    <span class="w-2 h-2 bg-brand-500 rounded-full animate-pulse"></span>
+                    <span>Powered by AI • Automated Code Reviews</span>
+                </div>
+
+                <h1 class="text-5xl md:text-7xl font-bold text-gray-900 mb-6 animate-slide-up">
+                    Automated Code Reviews
+                    <span class="text-brand-600">for GitHub</span>
+                </h1>
+
+                <p class="text-xl md:text-2xl text-gray-600 mb-12 max-w-3xl mx-auto animate-slide-up" style="animation-delay: 0.1s">
+                    PR Guardian AI reviews your pull requests instantly,
+                    catching bugs, security issues, and code smells before your team does.
+                </p>
+
+                <div class="flex flex-col sm:flex-row justify-center items-center space-y-4 sm:space-y-0 sm:space-x-4 animate-slide-up" style="animation-delay: 0.2s">
+                    <a href="/auth/login"
+                       class="w-full sm:w-auto px-8 py-4 bg-brand-600 text-white text-lg font-semibold rounded-xl hover:bg-brand-700 transition transform hover:scale-105 shadow-lg">
+                        Start Free Trial
+                    </a>
+                    <a href="https://github.com/yourusername/pr-guardian-ai"
+                       class="w-full sm:w-auto px-8 py-4 bg-white text-gray-900 text-lg font-semibold rounded-xl border-2 border-gray-200 hover:border-brand-300 transition transform hover:scale-105">
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Decorative elements -->
+        <div class="absolute top-0 left-0 w-64 h-64 bg-brand-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse-slow"></div>
+        <div class="absolute bottom-0 right-0 w-96 h-96 bg-purple-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse-slow" style="animation-delay: 1s"></div>
+    </div>
+
+    <!-- Features Section -->
+    <div class="py-24 bg-white">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold text-gray-900 mb-4">Everything You Need</h2>
+                <p class="text-xl text-gray-600">Powerful features to improve your code quality</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <!-- Feature 1 -->
+                <div class="group relative p-8 bg-gray-50 rounded-2xl transition hover:shadow-xl">
+                    <div class="w-14 h-14 bg-brand-100 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                        <svg class="w-8 h-8 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Instant Reviews</h3>
+                    <p class="text-gray-600">Get AI-powered feedback within seconds of opening a pull request</p>
+                </div>
+
+                <!-- Feature 2 -->
+                <div class="group relative p-8 bg-gray-50 rounded-2xl transition hover:shadow-xl">
+                    <div class="w-14 h-14 bg-purple-100 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                        <svg class="w-8 h-8 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Security Scanner</h3>
+                    <p class="text-gray-600">Detect vulnerabilities, secrets, and security anti-patterns automatically</p>
+                </div>
+
+                <!-- Feature 3 -->
+                <div class="group relative p-8 bg-gray-50 rounded-2xl transition hover:shadow-xl">
+                    <div class="w-14 h-14 bg-green-100 rounded-xl flex items-center justify-center mb-6 group-hover:scale-110 transition">
+                        <svg class="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Best Practices</h3>
+                    <p class="text-gray-600">Learn industry standards with actionable improvement suggestions</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- How It Works Section -->
+    <div class="py-24 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold text-gray-900 mb-4">How It Works</h2>
+                <p class="text-xl text-gray-600">Three simple steps to better code</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <!-- Step 1 -->
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-brand-600 text-white rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-6">1</div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Connect GitHub</h3>
+                    <p class="text-gray-600">Sign in with GitHub and authorize the app</p>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-brand-600 text-white rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-6">2</div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Select Repos</h3>
+                    <p class="text-gray-600">Choose which repositories to monitor</p>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="text-center">
+                    <div class="w-16 h-16 bg-brand-600 text-white rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-6">3</div>
+                    <h3 class="text-xl font-bold text-gray-900 mb-3">Get Reviews</h3>
+                    <p class="text-gray-600">AI reviews every PR automatically</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
