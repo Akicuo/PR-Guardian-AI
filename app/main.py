@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import uuid
 from typing import Any, Dict
 
 import httpx
@@ -24,6 +25,16 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("pr-guardian")
+
+# Log startup configuration
+logger.info("=" * 60)
+logger.info("PR Guardian AI Starting")
+logger.info(f"OpenAI Model: {settings.openai_model_id}")
+logger.info(f"OpenAI Base URL: {settings.openai_base_url}")
+logger.info(f"Bot Name: {settings.bot_name}")
+logger.info(f"Max Verification Calls: {settings.max_verification_calls}")
+logger.info(f"Log Level: {settings.log_level}")
+logger.info("=" * 60)
 
 # OpenAI client
 openai_client = OpenAI(
@@ -223,6 +234,9 @@ async def webhook(
     x_github_event: str = Header(None, alias="X-GitHub-Event"),
     x_hub_signature_256: str = Header(None, alias="X-Hub-Signature-256"),
 ):
+    # Generate request ID for tracing
+    request_id = str(uuid.uuid4())[:8]
+
     raw_body = await request.body()
 
     verify_github_signature(raw_body, x_hub_signature_256, settings.github_webhook_secret)
@@ -230,12 +244,12 @@ async def webhook(
     try:
         payload: Dict[str, Any] = json.loads(raw_body.decode("utf-8"))
     except json.JSONDecodeError:
-        logger.exception("Invalid JSON payload")
+        logger.exception(f"[{request_id}] Invalid JSON payload")
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     logger.info("=" * 30)
-    logger.info(">>> Webhook received")
-    logger.info(f">>> Event: {x_github_event}")
+    logger.info(f"[{request_id}] Webhook received")
+    logger.info(f"[{request_id}] Event: {x_github_event}")
 
     # 1) Ping
     if x_github_event == "ping":
@@ -243,16 +257,16 @@ async def webhook(
 
     # 2) Installation
     if x_github_event == "installation":
-        logger.info(f"Installation payload: {payload.get('action')}")
+        logger.info(f"[{request_id}] Installation payload: {payload.get('action')}")
         return JSONResponse({"msg": "installation event ok"})
 
     # 3) Pull Request
     if x_github_event == "pull_request":
         action = payload.get("action")
-        logger.info(f">>> Action: {action}")
+        logger.info(f"[{request_id}] Action: {action}")
 
         if action not in {"opened", "synchronize", "reopened"}:
-            logger.info("Ignoring PR action: %s", action)
+            logger.info(f"[{request_id}] Ignoring PR action: {action}")
             return JSONResponse({"msg": f"ignored action {action}"})
 
         pr = payload.get("pull_request", {})
@@ -264,10 +278,19 @@ async def webhook(
         repo_full_name = payload.get("repository", {}).get("full_name", "")
         repo_owner, repo_name = repo_full_name.split("/", 1) if "/" in repo_full_name else (repo_full_name, "")
 
-        logger.info(f">>> PR: {repo_full_name}#{pr_number}")
-        logger.info(f">>> Title: {pr_title}")
-        logger.info(f">>> comments_url: {comments_url}")
-        logger.info(f">>> diff_url: {diff_url}")
+        # Variable state logging
+        logger.debug(f"[{request_id}] Repository full name: {repo_full_name}")
+        logger.debug(f"[{request_id}] Repository owner: '{repo_owner}', name: '{repo_name}'")
+        logger.debug(f"[{request_id}] PR number: {pr_number}")
+        logger.debug(f"[{request_id}] Comments URL: {comments_url}")
+        logger.debug(f"[{request_id}] Diff URL: {diff_url}")
+
+        # Validate required variables
+        if not repo_owner or not repo_name:
+            logger.error(f"[{request_id}] Invalid repo decomposition: owner='{repo_owner}', name='{repo_name}' from '{repo_full_name}'")
+
+        logger.info(f"[{request_id}] PR: {repo_full_name}#{pr_number}")
+        logger.info(f"[{request_id}] Title: {pr_title}")
 
         # ===== NEW VERIFICATION WORKFLOW =====
 
@@ -290,30 +313,30 @@ This review will be verified against the actual codebase to ensure accuracy.
 
         try:
             await post_pr_comment(comments_url, initial_comment_body)
-            logger.info(">>> Posted initial acknowledgment comment")
+            logger.info(f"[{request_id}] Posted initial acknowledgment comment")
         except Exception as e:
-            logger.exception("Failed to post initial comment")
+            logger.exception(f"[{request_id}] Failed to post initial comment")
             # Continue anyway - this is not critical
 
         # Step 2: Fetch diff and generate draft review
         try:
             diff_text = await fetch_pr_diff(diff_url)
-            logger.info(f">>> Fetched diff: {len(diff_text)} chars")
+            logger.info(f"[{request_id}] Fetched diff: {len(diff_text)} chars")
         except Exception as e:
-            logger.exception("Failed to fetch PR diff")
+            logger.exception(f"[{request_id}] Failed to fetch PR diff")
             raise HTTPException(status_code=500, detail="Failed to fetch PR diff") from e
 
         try:
             from .ai_reviewer import generate_draft_review
             draft_review = await generate_draft_review(pr_title, pr_body, diff_text)
-            logger.info(f">>> Generated draft review: {len(draft_review)} chars")
-            logger.debug(f">>> Draft preview: {draft_review[:200]}...")
+            logger.info(f"[{request_id}] Generated draft review: {len(draft_review)} chars")
+            logger.debug(f"[{request_id}] Draft preview: {draft_review[:200]}...")
         except Exception as e:
-            logger.exception("Failed to generate draft review")
+            logger.exception(f"[{request_id}] Failed to generate draft review")
             raise HTTPException(status_code=500, detail="Failed to generate draft review") from e
 
         if not draft_review or not draft_review.strip():
-            logger.error("AI returned empty draft review!")
+            logger.error(f"[{request_id}] AI returned empty draft review!")
             draft_review = "_Unable to generate review._"
 
         # Step 3: Verify the review using GitHub API
@@ -322,8 +345,9 @@ This review will be verified against the actual codebase to ensure accuracy.
             from .github_app import get_pr_head_ref, find_bot_comment, update_pr_comment
 
             # Get PR head ref
+            logger.debug(f"[{request_id}] Verification parameters: repo_owner={repo_owner}, repo_name={repo_name}, pr_number={pr_number}")
             pr_head_ref, pr_head_sha = await get_pr_head_ref(repo_owner, repo_name, pr_number)
-            logger.info(f">>> PR head ref: {pr_head_ref}, sha: {pr_head_sha[:8] if pr_head_sha else 'N/A'}")
+            logger.info(f"[{request_id}] PR head ref: {pr_head_ref}, sha: {pr_head_sha[:8] if pr_head_sha else 'N/A'}")
 
             # Initialize verifier
             verifier = ReviewVerifier(repo_owner, repo_name, pr_number)
@@ -334,16 +358,20 @@ This review will be verified against the actual codebase to ensure accuracy.
                 pr_head_ref or f"refs/pull/{pr_number}/head"
             )
 
-            logger.info(f">>> Verification complete: {len(verification_results)} claims checked")
-            logger.info(f">>> Tool calls made: {verifier.tool_calls_made}/{verifier.max_tool_calls}")
+            logger.info(f"[{request_id}] Verification complete: {len(verification_results)} claims checked")
+            logger.info(f"[{request_id}] Tool calls made: {verifier.tool_calls_made}/{'unlimited' if verifier.unlimited else verifier.max_tool_calls}")
 
             # Log verification results
+            for i, result in enumerate(verification_results):
+                logger.debug(f"[{request_id}] Result {i+1}: claim='{result.claim.description}', valid={result.is_valid}")
+
+            # Log corrections
             for result in verification_results:
                 if not result.is_valid:
-                    logger.info(f">>> Corrected claim: {result.claim.description} -> {result.corrected_claim}")
+                    logger.info(f"[{request_id}] Corrected claim: {result.claim.description} -> {result.corrected_claim}")
 
         except Exception as e:
-            logger.exception("Verification failed, using draft review")
+            logger.exception(f"[{request_id}] Verification failed, using draft review")
             # Fallback to draft review if verification fails
             verified_review = draft_review
             verification_results = []
@@ -376,14 +404,14 @@ This review will be verified against the actual codebase to ensure accuracy.
                 # Update the initial comment
                 comment_id = initial_comment["id"]
                 await update_pr_comment(repo_owner, repo_name, comment_id, final_comment_body)
-                logger.info(f">>> Updated initial comment (ID: {comment_id})")
+                logger.info(f"[{request_id}] Updated initial comment (ID: {comment_id})")
             else:
                 # Post new comment
                 await post_pr_comment(comments_url, final_comment_body)
-                logger.info(">>> Posted final verified review as new comment")
+                logger.info(f"[{request_id}] Posted final verified review as new comment")
 
         except Exception as e:
-            logger.exception("Failed to update/post final comment")
+            logger.exception(f"[{request_id}] Failed to update/post final comment")
             # Try to post as new comment if update failed
             try:
                 final_comment_body = f"""## Code Review by {settings.bot_name}
@@ -402,13 +430,13 @@ This review will be verified against the actual codebase to ensure accuracy.
 
 *This comment was automatically generated by [{settings.bot_name}]({settings.openai_base_url}) using {settings.openai_model_id}*"""
                 await post_pr_comment(comments_url, final_comment_body)
-                logger.info(">>> Posted final review as new comment (fallback)")
+                logger.info(f"[{request_id}] Posted final review as new comment (fallback)")
             except Exception as e2:
-                logger.exception("Failed to post final comment")
+                logger.exception(f"[{request_id}] Failed to post final comment")
                 raise HTTPException(status_code=500, detail="Failed to post final comment") from e2
 
-        logger.info(f">>> Successfully posted verified review to {repo_full_name}#{pr_number}")
+        logger.info(f"[{request_id}] Successfully posted verified review to {repo_full_name}#{pr_number}")
         return JSONResponse({"msg": "Verified review posted"})
 
-    logger.info(f"Unhandled event: {x_github_event}")
+    logger.info(f"[{request_id}] Unhandled event: {x_github_event}")
     return JSONResponse({"msg": f"unhandled event {x_github_event}"})

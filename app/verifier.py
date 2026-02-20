@@ -4,13 +4,13 @@ import base64
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import List, Optional, Tuple
 
 from .config import get_settings
 from .github_app import get_file_content, get_file_lines
 
-logger = logging.getLogger("pr-guardian")
+logger = logging.getLogger("pr-guardian.verifier")
 settings = get_settings()
 
 
@@ -63,26 +63,36 @@ class ReviewVerifier:
         Returns:
             (verified_review_text, verification_results)
         """
+        logger.info(f"Starting verification for PR head ref: {pr_head_ref}")
+        logger.debug(f"Draft review length: {len(draft_review)} chars")
+
         # Step 1: Extract claims from the review
         claims = self._extract_claims(draft_review)
-        logger.info(f"Extracted {len(claims)} claims for verification")
+        logger.info(f"Extracted {len(claims)} claims: {[c.claim_type for c in claims]}")
+        logger.debug(f"Claims details: {claims}")
 
         if not claims:
             # No claims to verify
+            logger.info("No claims to verify, returning draft review")
             return draft_review, []
 
         # Step 2: Verify each claim
         verification_results = []
-        for claim in claims:
+        for i, claim in enumerate(claims):
             if not self.unlimited and self.tool_calls_made >= self.max_tool_calls:
                 logger.warning(f"Reached max tool calls ({self.max_tool_calls}), stopping verification")
                 break
 
+            logger.debug(f"Verifying claim {i+1}/{len(claims)}: {claim.claim_type} - {claim.file_path}")
             result = await self._verify_claim(claim, pr_head_ref)
+            logger.debug(f"Claim {i+1} result: valid={result.is_valid}, evidence={result.evidence[:100] if result.evidence else None}")
             verification_results.append(result)
 
         # Step 3: Refine review based on verification
         verified_review = self._refine_review(draft_review, verification_results)
+
+        logger.info(f"Verification complete: {len(verification_results)} claims checked")
+        logger.info(f"Tool calls made: {self.tool_calls_made}/{'unlimited' if self.unlimited else self.max_tool_calls}")
 
         return verified_review, verification_results
 
@@ -145,17 +155,23 @@ class ReviewVerifier:
         """
         Verify a single claim by inspecting the actual file.
         """
+        logger.debug(f"Verifying claim type={claim.claim_type}, file={claim.file_path}")
         try:
             if claim.claim_type == "incomplete_file":
+                logger.debug(f"Checking file completeness for {claim.file_path}")
                 return await self._verify_file_complete(claim, pr_head_ref)
             elif claim.claim_type == "missing_import":
+                logger.debug(f"Checking missing import for {claim.file_path}")
                 return await self._verify_missing_import(claim, pr_head_ref)
             elif claim.claim_type == "syntax_error":
+                logger.debug(f"Checking syntax error on line {claim.line_number}")
                 return await self._verify_syntax_error(claim, pr_head_ref)
             else:
+                logger.debug(f"Checking generic issue for {claim.file_path}")
                 return await self._verify_generic_issue(claim, pr_head_ref)
         except Exception as e:
-            logger.error(f"Error verifying claim: {e}")
+            logger.error(f"Error verifying claim {claim.claim_type} for {claim.file_path}: {e}")
+            logger.debug(f"Claim details: {asdict(claim)}")
             return VerificationResult(
                 claim=claim,
                 is_valid=False,
@@ -427,6 +443,7 @@ class ReviewVerifier:
         """
         cache_key = f"{ref}:{file_path}"
         if cache_key not in self._file_cache:
+            logger.debug(f"Cache miss: {file_path} from {ref}")
             file_data = await get_file_content(
                 self.repo_owner,
                 self.repo_name,
@@ -439,6 +456,8 @@ class ReviewVerifier:
                 "raw": file_data,
                 "decoded_content": content_bytes.decode("utf-8")
             }
+        else:
+            logger.debug(f"Cache hit: {file_path} from {ref}")
         return self._file_cache[cache_key]
 
     def _refine_review(

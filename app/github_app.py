@@ -1,10 +1,13 @@
 import base64
 import httpx
+import logging
 from typing import Dict, List, Optional
 
 from .config import get_settings
 
 GITHUB_API_BASE = "https://api.github.com"
+
+logger = logging.getLogger("pr-guardian.github")
 
 
 def get_github_token() -> str:
@@ -13,21 +16,46 @@ def get_github_token() -> str:
     return settings.github_token
 
 
+def mask_token(token: str) -> str:
+    """Mask token for logging, showing first 4 and last 4 chars."""
+    if len(token) < 10:
+        return "***"
+    return f"{token[:4]}...{token[-4:]}"
+
+
 async def github_request(method: str, url: str, **kwargs):
     """
     Make an authenticated request to GitHub API using PAT.
     """
     token = get_github_token()
+    logger.debug(f"GitHub API: {method} {url}")
+    logger.debug(f"Using token: {mask_token(token)}")
+
     headers = kwargs.pop("headers", {})
     headers.update({
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github+json",
         "User-Agent": "PR-Guardian-AI/1.0",
     })
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.request(method, url, headers=headers, **kwargs)
-        response.raise_for_status()
-        return response
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.request(method, url, headers=headers, **kwargs)
+            logger.debug(f"Response status: {response.status_code}")
+
+            # Log rate limit info
+            remaining = response.headers.get("x-ratelimit-remaining")
+            if remaining:
+                logger.debug(f"GitHub API rate limit remaining: {remaining}")
+
+            response.raise_for_status()
+            return response
+    except httpx.HTTPStatusError as e:
+        logger.error(f"GitHub API error {e.response.status_code}: {e.response.text[:500]}")
+        raise
+    except Exception as e:
+        logger.error(f"GitHub request failed: {type(e).__name__}: {e}")
+        raise
 
 
 async def get_pr_details(repo_owner: str, repo_name: str, pr_number: int) -> Dict:
@@ -68,6 +96,7 @@ async def get_file_content(
         Dict with: content (base64 encoded), encoding, sha, size
     """
     import urllib.parse
+    logger.debug(f"Fetching file: {file_path} from {repo_owner}/{repo_name} ref: {ref}")
     encoded_path = urllib.parse.quote(file_path, safe='')
     url = f"{GITHUB_API_BASE}/repos/{repo_owner}/{repo_name}/contents/{encoded_path}"
     params = {"ref": ref} if ref else {}
@@ -113,9 +142,11 @@ async def get_pr_head_ref(
     Returns:
         (head_ref, head_sha) - e.g., ("feature-branch", "abc123...")
     """
+    logger.debug(f"Getting PR head ref for {repo_owner}/{repo_name}#{pr_number}")
     pr_data = await get_pr_details(repo_owner, repo_name, pr_number)
     head_ref = pr_data.get("head", {}).get("ref", "")
     head_sha = pr_data.get("head", {}).get("sha", "")
+    logger.debug(f"PR head ref: {head_ref}, sha: {head_sha[:8] if head_sha else 'None'}")
     return head_ref, head_sha
 
 
@@ -128,6 +159,7 @@ async def update_pr_comment(
     """
     Update an existing PR comment.
     """
+    logger.debug(f"Updating comment {comment_id} on {repo_owner}/{repo_name}")
     url = f"{GITHUB_API_BASE}/repos/{repo_owner}/{repo_name}/issues/comments/{comment_id}"
     payload = {"body": body}
     await github_request("PATCH", url, json=payload)
@@ -145,6 +177,7 @@ async def find_bot_comment(
     Returns:
         Comment dict if found, None otherwise
     """
+    logger.debug(f"Finding comment by bot '{bot_name}' on {repo_owner}/{repo_name}#{pr_number}")
     url = f"{GITHUB_API_BASE}/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments"
     response = await github_request("GET", url)
     comments = response.json()
@@ -152,5 +185,7 @@ async def find_bot_comment(
     # Find most recent comment by bot
     for comment in reversed(comments):
         if bot_name in comment.get("body", ""):
+            logger.debug(f"Found bot comment: {comment['id']}")
             return comment
+    logger.debug(f"No bot comment found")
     return None
