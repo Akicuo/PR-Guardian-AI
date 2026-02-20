@@ -33,6 +33,8 @@ This tool helps developers deliver high-quality code faster, reduces review work
 |    Detects Code Issues              | Finds bugs, security risks, optimization issues, unused code, etc. |
 |    Comments Inside PR               | Posts human-like comments directly in the conversation.            |
 |    Real-Time Webhook Processing     | Handles PR events instantly (opened, updated).                     |
+|    Verification Loop               | Validates AI claims against actual code to prevent false positives. |
+|    Configurable Verification        | Control verification depth via environment variables.              |
 |    Secure GitHub App Authentication | Uses JWT & installation token best practices.                      |
 |    Works on Any Repository          | Easy installation & setup.                                         |
 |    Developer Friendly               | Fully open-source & customizable.                                  |
@@ -90,7 +92,15 @@ It sends diff to OpenAI with a structured prompt:
 * security warnings
 * suggest improvements
 
-### **7. App posts comments in the PR**
+### **7. Verification loop validates claims**
+
+The bot posts an initial "analyzing" comment, then verifies its claims:
+* Reads actual file content from the PR branch using GitHub API
+* Validates claims like "file is incomplete" or "missing import"
+* Corrects false claims before posting the final review
+* Configurable via `MAX_VERIFICATION_CALLS` (default: 20, use `-1` for unlimited)
+
+### **8. App posts verified comments in the PR**
 
 Using:
 
@@ -132,19 +142,33 @@ POST /repos/{owner}/{repo}/issues/{pr_number}/comments
         │                          │
         ▼                          │
  ┌──────────────────────────────┐  │
+ │ Post "Analyzing" Comment     │  │
+ └──────┬───────────────────────┘  │
+        │                          │
+        ▼                          │
+ ┌──────────────────────────────┐  │
  │ Fetch PR diff (.diff)        │  │
  └──────┬───────────────────────┘  │
         │                          │
         ▼                          │
  ┌────────────────────────────┐    │
  │ Send code to OpenAI        │    │
- │ AI Review Engine           │    │
+ │ Generate Draft Review      │    │
  └──────┬─────────────────────┘    │
         │                          │
         ▼                          │
  ┌─────────────────────────────┐   │
- │ GitHub API: Post Comment    │◄──┘
- │ inside Pull Request         │
+ │ Verification Loop           │   │
+ │ - Extract claims            │   │
+ │ - Fetch actual files        │   │
+ │ - Validate claims           │   │
+ │ - Refine review             │   │
+ └──────┬──────────────────────┘   │
+        │                          │
+        ▼                          │
+ ┌─────────────────────────────┐   │
+ │ GitHub API: Update Comment  │◄──┘
+ │ with Verified Review        │
  └─────────────────────────────┘
 ```
 
@@ -168,12 +192,25 @@ pip install -r requirements.txt
 ### 3. Create `.env`
 
 ```
-GITHUB_APP_ID=123456
-GITHUB_PRIVATE_KEY_PATH=./private-key.pem
-GITHUB_WEBHOOK_SECRET=your-secret
-OPENAI_API_KEY=your-key
+GITHUB_TOKEN=your-github-pat
+GITHUB_WEBHOOK_SECRET=your-webhook-secret
+OPENAI_API_KEY=your-openai-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_ID=gpt-4o-mini
+BOT_NAME=PR Guardian AI
 LOG_LEVEL=info
+MAX_VERIFICATION_CALLS=20
 ```
+
+**Environment Variables:**
+- `GITHUB_TOKEN` - GitHub Personal Access Token with repo access
+- `GITHUB_WEBHOOK_SECRET` - Optional webhook secret for signature verification
+- `OPENAI_API_KEY` - Your OpenAI API key (or compatible endpoint)
+- `OPENAI_BASE_URL` - OpenAI API base URL (default: `https://api.openai.com/v1`)
+- `OPENAI_MODEL_ID` - Model to use for reviews (default: `gpt-4o-mini`)
+- `BOT_NAME` - Name displayed in comments (default: `PR Guardian AI`)
+- `LOG_LEVEL` - Logging level (default: `info`)
+- `MAX_VERIFICATION_CALLS` - Max GitHub API calls for verification (default: `20`, use `-1` for unlimited)
 
 ### 4. Run server
 

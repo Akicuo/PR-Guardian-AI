@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     openai_model_id: str = Field("gpt-4o-mini", alias="OPENAI_MODEL_ID")
     bot_name: str = Field("PR Guardian AI", alias="BOT_NAME")
     log_level: str = Field("info", alias="LOG_LEVEL")
+    max_verification_calls: int = Field(20, alias="MAX_VERIFICATION_CALLS")
 
     model_config = SettingsConfigDict(
         env_file=".env",
