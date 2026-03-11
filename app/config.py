@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     openai_model_id: str = Field("gpt-4o-mini", alias="OPENAI_MODEL_ID")
     bot_name: str = Field("PR Guardian AI", alias="BOT_NAME")
     log_level: str = Field("info", alias="LOG_LEVEL")
+    review_chunk_chars: int = Field(30000, alias="REVIEW_CHUNK_CHARS")
+    review_context_lines: int = Field(20, alias="REVIEW_CONTEXT_LINES")
+    review_max_output_tokens: int = Field(1200, alias="REVIEW_MAX_OUTPUT_TOKENS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import hmac
 import json
@@ -8,9 +7,14 @@ from typing import Any, Dict
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from openai import OpenAI
 
 from .config import get_settings
+from .review_engine import (
+    build_review_chunks_from_diff,
+    collect_file_contexts,
+    render_review_markdown,
+    run_review_chunks,
+)
 
 # ==========================
 # Settings & Logging
@@ -24,12 +28,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("pr-guardian")
-
-# OpenAI client
-openai_client = OpenAI(
-    api_key=settings.openai_api_key,
-    base_url=settings.openai_base_url
-)
 
 # FastAPI app
 app = FastAPI(title="PR Guardian AI Webhook")
@@ -118,94 +116,35 @@ async def post_pr_comment(comments_url: str, body: str) -> None:
         resp.raise_for_status()
 
 
-async def review_diff_with_ai(diff_text: str, pr_title: str, pr_body: str | None) -> str:
+async def review_diff_with_ai(
+    diff_text: str,
+    pr_title: str,
+    pr_body: str | None,
+    repo_full_name: str,
+    pr_number: int | str,
+    head_sha: str,
+) -> str:
     """
     Send the diff to OpenAI and get a review comment.
     """
-    max_chars = 16000
-    short_diff = diff_text[:max_chars]
-
-    logger.info(f">>> Sending diff to AI (model: {settings.openai_model_id}, base_url: {settings.openai_base_url})")
-    logger.info(f">>> Diff length: {len(diff_text)} chars, truncated to: {len(short_diff)} chars")
-
-    system_prompt = (
-        "You are an expert senior code reviewer. "
-        "Given a Git diff, you will provide a concise review:\n"
-        "- Point out potential bugs, security risks, and performance issues.\n"
-        "- Suggest improvements and best practices.\n"
-        "- If everything looks good, say that explicitly.\n"
-        "- Answer in German (Swiss style german but not schweizerdeutsch) and use Markdown with bullet points."
+    logger.info(
+        ">>> Sending diff to AI (model: %s, base_url: %s)",
+        settings.openai_model_id,
+        settings.openai_base_url,
     )
+    logger.info(">>> Diff length: %s chars", len(diff_text))
 
-    user_prompt = f"""
-Pull Request Title: {pr_title}
+    file_contexts = await collect_file_contexts(
+        repo_full_name=repo_full_name,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        context_lines=settings.review_context_lines,
+    )
+    chunks = build_review_chunks_from_diff(diff_text, file_contexts)
+    logger.info(">>> Built %s review chunk(s)", len(chunks))
 
-Pull Request Description:
-{pr_body or "(no description)"}
-
-Git Diff:
-{short_diff}
-"""
-
-    def _call_openai() -> str:
-        try:
-            # Build request with thinking mode disabled for Z.AI to get content in standard field
-            request_params = {
-                "model": settings.openai_model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 16000,
-            }
-
-            # Disable thinking mode for Z.AI/GLM to get response in content field
-            if "z.ai" in settings.openai_base_url.lower():
-                request_params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-                logger.info(">>> Disabled thinking mode for Z.AI API")
-
-            logger.info(">>> Calling AI API...")
-            resp = openai_client.chat.completions.create(**request_params)
-
-            # Log the full response structure for debugging
-            logger.info(f">>> Full API response: {resp}")
-            logger.info(f">>> Response choices: {resp.choices}")
-            logger.info(f">>> First choice message: {resp.choices[0].message}")
-            logger.info(f">>> Message content field: '{resp.choices[0].message.content}'")
-            if hasattr(resp.choices[0].message, 'reasoning_content'):
-                logger.info(f">>> Message reasoning_content field length: {len(resp.choices[0].message.reasoning_content or '')}")
-
-            # Check if response has choices
-            if not resp.choices:
-                logger.error("AI returned empty choices array")
-                return "_Error: AI returned no response._"
-
-            message = resp.choices[0].message
-
-            # Use the standard content field (should contain final answer with thinking disabled)
-            content = message.content
-
-            if not content:
-                logger.error("AI returned empty content field (thinking mode may still be enabled)")
-                # Last resort: check reasoning_content
-                if hasattr(message, 'reasoning_content') and message.reasoning_content:
-                    logger.warning("Falling back to reasoning_content - thinking mode may not be disabled properly")
-                    logger.info(f">>> Using reasoning_content (first 200 chars): {message.reasoning_content[:200]}")
-                    content = message.reasoning_content
-                else:
-                    return "_Error: AI returned empty content._"
-
-            content = content.strip()
-            logger.info(f">>> Final content length: {len(content)} chars")
-            logger.info(f">>> Final content preview: {content[:200]}")
-            return content
-        except Exception as e:
-            logger.error(f"AI API error: {e}")
-            raise
-
-    review_text = await asyncio.to_thread(_call_openai)
-    return review_text
+    result = await run_review_chunks(pr_title, pr_body, chunks)
+    return render_review_markdown(result)
 
 
 # ==========================
@@ -261,6 +200,7 @@ async def webhook(
         pr_title = pr.get("title", "")
         pr_body = pr.get("body", "")
         pr_number = pr.get("number", "")
+        head_sha = pr.get("head", {}).get("sha", "")
         repo_full_name = payload.get("repository", {}).get("full_name", "")
 
         logger.info(f">>> PR: {repo_full_name}#{pr_number}")
@@ -277,7 +217,14 @@ async def webhook(
 
         # Review with AI
         try:
-            review = await review_diff_with_ai(diff_text, pr_title, pr_body)
+            review = await review_diff_with_ai(
+                diff_text=diff_text,
+                pr_title=pr_title,
+                pr_body=pr_body,
+                repo_full_name=repo_full_name,
+                pr_number=pr_number,
+                head_sha=head_sha,
+            )
             logger.info(f">>> AI review generated (length: {len(review)} chars)")
             logger.debug(f">>> Review content: {review[:200]}...")
         except Exception as e:
