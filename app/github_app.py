@@ -80,6 +80,24 @@ def has_write_permission(permission: str | None) -> bool:
     return permission.strip().lower() in WRITE_PERMISSIONS
 
 
+async def is_org_member(org: str, username: str) -> bool:
+    """
+    Check if a user is a member of the given GitHub organization.
+    Uses GET /orgs/{org}/members/{username} — returns 204 if member, 404 if not.
+    """
+    if not username or not org:
+        return False
+
+    url = f"{GITHUB_API_BASE}/orgs/{org}/members/{username}"
+    try:
+        await github_request("GET", url)
+        return True
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {302, 404}:
+            return False
+        raise
+
+
 async def is_trusted_repository_user(
     repo_owner: str,
     repo_name: str,
@@ -91,6 +109,9 @@ async def is_trusted_repository_user(
     """
     association = (author_association or "").strip().upper()
     if association in TRUSTED_AUTHOR_ASSOCIATIONS:
+        return True
+
+    if await is_org_member(org=repo_owner, username=username):
         return True
 
     permission = await get_repository_permission(repo_owner, repo_name, username)
