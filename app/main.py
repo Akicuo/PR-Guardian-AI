@@ -9,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .config import get_settings
+from .github_app import is_trusted_repository_user
 from .review_engine import (
     build_review_chunks_from_diff,
     collect_file_contexts,
@@ -201,12 +202,41 @@ async def webhook(
         pr_body = pr.get("body", "")
         pr_number = pr.get("number", "")
         head_sha = pr.get("head", {}).get("sha", "")
+        pr_author = pr.get("user", {}).get("login", "")
+        pr_author_association = pr.get("author_association", "")
         repo_full_name = payload.get("repository", {}).get("full_name", "")
+        repo_owner = payload.get("repository", {}).get("owner", {}).get("login", "")
+        repo_name = payload.get("repository", {}).get("name", "")
 
         logger.info(f">>> PR: {repo_full_name}#{pr_number}")
         logger.info(f">>> Title: {pr_title}")
         logger.info(f">>> comments_url: {comments_url}")
         logger.info(f">>> diff_url: {diff_url}")
+        logger.info(
+            ">>> PR author: %s (association=%s)",
+            pr_author or "unknown",
+            pr_author_association or "unknown",
+        )
+
+        try:
+            trusted_author = await is_trusted_repository_user(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                username=pr_author,
+                author_association=pr_author_association,
+            )
+        except Exception as e:
+            logger.exception("Failed to determine PR author permissions")
+            raise HTTPException(status_code=500, detail="Failed to determine PR author permissions") from e
+
+        if not trusted_author:
+            logger.info(
+                "Skipping automated review for %s#%s because PR author %s is not an org member and lacks write access",
+                repo_full_name,
+                pr_number,
+                pr_author or "unknown",
+            )
+            return JSONResponse({"msg": "ignored untrusted PR author"})
 
         # Fetch diff
         try:
