@@ -1,9 +1,14 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.review_engine import (
+    ReviewResponseParseError,
     build_context_snippets,
     extract_json_payload,
     merge_review_results,
+    normalize_message_content,
+    _call_openai_review,
     pack_review_sections,
     split_diff_section_by_hunk,
     split_diff_sections,
@@ -78,6 +83,80 @@ class ReviewEngineTests(unittest.TestCase):
         )
 
         self.assertEqual("bad", payload["verdict"])
+
+    def test_extract_json_payload_handles_prose_wrapped_json(self) -> None:
+        payload = extract_json_payload(
+            'Here is the review result:\n{"verdict":"no_significant_issues","summary":"No issues.","findings":[]}\nThanks.'
+        )
+
+        self.assertEqual("no_significant_issues", payload["verdict"])
+
+    def test_normalize_message_content_handles_content_parts(self) -> None:
+        content = [
+            {"type": "text", "text": "First line"},
+            SimpleNamespace(type="output_text", text="Second line"),
+        ]
+
+        normalized = normalize_message_content(content)
+
+        self.assertEqual("First line\nSecond line", normalized)
+
+    def test_call_openai_review_repairs_non_json_output(self) -> None:
+        initial_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="I found one issue. Please see JSON below maybe.", reasoning_content=None)
+                )
+            ]
+        )
+        repaired_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"verdict":"bad","summary":"Found 1 issue.","findings":[]}',
+                        reasoning_content=None,
+                    )
+                )
+            ]
+        )
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_: initial_response)
+            )
+        )
+
+        with patch("app.review_engine.get_openai_client", return_value=fake_client), patch(
+            "app.review_engine.repair_review_response",
+            return_value=repaired_response.choices[0].message.content,
+        ) as repair_mock:
+            result = _call_openai_review("Example PR", "", "File: app.py", 1, 1)
+
+        self.assertEqual("bad", result.verdict)
+        repair_mock.assert_called_once()
+
+    def test_call_openai_review_raises_parse_error_after_failed_repair(self) -> None:
+        initial_response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="Definitely not JSON", reasoning_content=None)
+                )
+            ]
+        )
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_: initial_response)
+            )
+        )
+
+        with patch("app.review_engine.get_openai_client", return_value=fake_client), patch(
+            "app.review_engine.repair_review_response",
+            return_value="still not json",
+        ):
+            with self.assertRaises(ReviewResponseParseError) as error_context:
+                _call_openai_review("Example PR", "", "File: app.py", 1, 1)
+
+        self.assertTrue(error_context.exception.repair_attempted)
+        self.assertIn("Definitely not JSON", error_context.exception.preview)
 
     def test_merge_review_results_deduplicates_findings(self) -> None:
         finding = ReviewFinding(

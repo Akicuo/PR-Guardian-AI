@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(python -m py_compile:*)",
-      "WebSearch"
+      "WebSearch",
+      "mcp__github__pull_request_read",
+      "mcp__github__get_me"
     ]
   }
 }

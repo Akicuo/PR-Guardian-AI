@@ -49,6 +49,29 @@ Return valid JSON only with this shape:
 }
 """
 
+REVIEW_REPAIR_SYSTEM_PROMPT = """You convert code review output into strict JSON.
+Return valid JSON only with this exact shape:
+{
+  "verdict": "bad" | "no_significant_issues",
+  "summary": "one short neutral sentence",
+  "findings": [
+    {
+      "severity": "high" | "medium" | "low",
+      "file": "path/to/file",
+      "location": "function, symbol, hunk, or line range",
+      "title": "short issue title",
+      "reason": "why this is a problem"
+    }
+  ]
+}
+
+Do not add markdown fences, prose, or extra keys.
+If the source does not contain usable findings, return:
+{"verdict":"no_significant_issues","summary":"No significant issues found in the changed code.","findings":[]}
+"""
+
+CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+
 
 @dataclass
 class ReviewFinding:
@@ -71,6 +94,20 @@ class ChangedFileContext:
     filename: str
     status: str
     context_snippets: list[str]
+
+
+class ReviewResponseParseError(ValueError):
+    def __init__(self, message: str, raw_response: str, *, repair_attempted: bool) -> None:
+        super().__init__(message)
+        self.raw_response = raw_response
+        self.repair_attempted = repair_attempted
+
+    @property
+    def preview(self) -> str:
+        normalized = re.sub(r"\s+", " ", self.raw_response).strip()
+        if len(normalized) <= 240:
+            return normalized
+        return normalized[:237] + "..."
 
 
 @lru_cache
@@ -401,6 +438,29 @@ def build_chunk_prompt(pr_title: str, pr_body: str | None, chunk_text: str, chun
     )
 
 
+def build_review_request_params(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    max_tokens: int,
+) -> dict[str, Any]:
+    settings = get_settings()
+    request_params: dict[str, Any] = {
+        "model": settings.openai_model_id,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+
+    if "z.ai" in settings.openai_base_url.lower():
+        request_params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    return request_params
+
+
 def normalize_finding(raw_finding: dict[str, Any]) -> ReviewFinding | None:
     if not isinstance(raw_finding, dict):
         return None
@@ -442,19 +502,67 @@ def parse_review_response(text: str) -> ReviewResult:
     return ReviewResult(verdict=verdict, summary=summary, findings=findings)
 
 
+def normalize_message_content(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [normalize_message_content(part) for part in content]
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(content, dict):
+        for key in ("text", "content", "value", "output_text"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    for attribute in ("text", "content", "value", "output_text"):
+        value = getattr(content, attribute, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list):
+            normalized = normalize_message_content(value)
+            if normalized:
+                return normalized
+
+    return ""
+
+
+def decode_first_json_object(text: str) -> dict[str, Any] | None:
+    candidate = text.strip()
+    if not candidate:
+        return None
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", candidate):
+        try:
+            payload, _ = decoder.raw_decode(candidate[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+
+    return None
+
+
 def extract_json_payload(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if len(lines) >= 3:
-            cleaned = "\n".join(lines[1:-1]).strip()
+    candidates: list[str] = []
+    stripped = text.strip()
+    if stripped:
+        candidates.append(stripped)
+    candidates.extend(match.group(1).strip() for match in CODE_FENCE_RE.finditer(text))
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("No JSON object found in model response")
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        payload = decode_first_json_object(candidate)
+        if payload is not None:
+            return payload
 
-    return json.loads(cleaned[start:end + 1])
+    raise ValueError("No JSON object found in model response")
 
 
 def deduplicate_findings(findings: list[ReviewFinding]) -> list[ReviewFinding]:
@@ -544,37 +652,70 @@ def build_review_chunks_from_diff(
     return pack_review_sections(sections, settings.review_chunk_chars)
 
 
+def repair_review_response(raw_content: str) -> str:
+    settings = get_settings()
+    response = get_openai_client().chat.completions.create(
+        **build_review_request_params(
+            REVIEW_REPAIR_SYSTEM_PROMPT,
+            (
+                "Rewrite the following output as strict JSON only.\n\n"
+                "Source output:\n"
+                f"{raw_content}"
+            ),
+            max_tokens=min(settings.review_max_output_tokens, 800),
+        )
+    )
+    if not response.choices:
+        raise ValueError("AI repair returned no choices")
+
+    message = response.choices[0].message
+    repaired = normalize_message_content(message.content)
+    if not repaired and hasattr(message, "reasoning_content"):
+        repaired = normalize_message_content(message.reasoning_content)
+    if not repaired:
+        raise ValueError("AI repair returned empty content")
+
+    return repaired
+
+
 def _call_openai_review(pr_title: str, pr_body: str | None, chunk_text: str, chunk_number: int, total_chunks: int) -> ReviewResult:
     settings = get_settings()
-    request_params: dict[str, Any] = {
-        "model": settings.openai_model_id,
-        "messages": [
-            {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": build_chunk_prompt(pr_title, pr_body, chunk_text, chunk_number, total_chunks),
-            },
-        ],
-        "temperature": 0,
-        "max_tokens": settings.review_max_output_tokens,
-    }
-
-    if "z.ai" in settings.openai_base_url.lower():
-        request_params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-
-    response = get_openai_client().chat.completions.create(**request_params)
+    response = get_openai_client().chat.completions.create(
+        **build_review_request_params(
+            REVIEW_SYSTEM_PROMPT,
+            build_chunk_prompt(pr_title, pr_body, chunk_text, chunk_number, total_chunks),
+            max_tokens=settings.review_max_output_tokens,
+        )
+    )
     if not response.choices:
         raise ValueError("AI returned no choices")
 
     message = response.choices[0].message
-    content = (message.content or "").strip()
+    content = normalize_message_content(message.content)
     if not content and hasattr(message, "reasoning_content"):
-        content = (message.reasoning_content or "").strip()
+        content = normalize_message_content(message.reasoning_content)
     if not content:
         raise ValueError("AI returned empty content")
 
     logger.info("Parsed review chunk %s/%s response (%s chars)", chunk_number, total_chunks, len(content))
-    return parse_review_response(content)
+    try:
+        return parse_review_response(content)
+    except (ValueError, json.JSONDecodeError) as first_error:
+        logger.warning(
+            "Review chunk %s/%s returned non-parseable output; attempting JSON repair. Preview: %s",
+            chunk_number,
+            total_chunks,
+            re.sub(r"\s+", " ", content).strip()[:240],
+        )
+        try:
+            repaired_content = repair_review_response(content)
+            return parse_review_response(repaired_content)
+        except (ValueError, json.JSONDecodeError) as repair_error:
+            raise ReviewResponseParseError(
+                "Failed to parse review response after repair attempt",
+                content,
+                repair_attempted=True,
+            ) from repair_error
 
 
 async def run_review_chunks(pr_title: str, pr_body: str | None, chunks: list[str]) -> ReviewResult:

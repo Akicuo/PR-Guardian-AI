@@ -19,6 +19,7 @@ from .merge_conflicts import (
     try_resolve_pull_request_conflicts,
 )
 from .review_engine import (
+    ReviewResponseParseError,
     build_review_chunks_from_diff,
     collect_file_contexts,
     render_review_markdown,
@@ -301,6 +302,17 @@ async def webhook(
             )
             logger.info(f">>> AI review generated (length: {len(review)} chars)")
             logger.debug(f">>> Review content: {review[:200]}...")
+        except ReviewResponseParseError as e:
+            logger.error(
+                "AI review output could not be parsed for %s#%s (model=%s, base_url=%s, repair_attempted=%s, preview=%s)",
+                repo_full_name,
+                pr_number,
+                settings.openai_model_id,
+                settings.openai_base_url,
+                e.repair_attempted,
+                e.preview,
+            )
+            return JSONResponse({"msg": "AI review skipped due to parse failure"})
         except Exception as e:
             logger.exception("Failed to generate AI review")
             raise HTTPException(status_code=500, detail="Failed to generate AI review") from e
