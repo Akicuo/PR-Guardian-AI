@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     review_chunk_chars: int = Field(30000, alias="REVIEW_CHUNK_CHARS")
     review_context_lines: int = Field(20, alias="REVIEW_CONTEXT_LINES")
     review_max_output_tokens: int = Field(1200, alias="REVIEW_MAX_OUTPUT_TOKENS")
+    merge_conflict_max_files: int = Field(10, alias="MERGE_CONFLICT_MAX_FILES")
+    merge_conflict_max_input_chars: int = Field(18000, alias="MERGE_CONFLICT_MAX_INPUT_CHARS")
+    merge_conflict_max_output_tokens: int = Field(6000, alias="MERGE_CONFLICT_MAX_OUTPUT_TOKENS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

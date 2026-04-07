@@ -32,6 +32,7 @@ This tool helps developers deliver high-quality code faster, reduces review work
 |    AI-powered Code Review           | Automatically analyzes PR diffs using OpenAI.                      |
 |    Detects Code Issues              | Finds bugs, security risks, optimization issues, unused code, etc. |
 |    Comments Inside PR               | Posts human-like comments directly in the conversation.            |
+|    Permissioned Merge Conflict Help | Offers and attempts conflict resolution only when an authorized user or PR author asks. |
 |    Real-Time Webhook Processing     | Handles PR events instantly (opened, updated).                     |
 |    Secure GitHub App Authentication | Uses JWT & installation token best practices.                      |
 |    Works on Any Repository          | Easy installation & setup.                                         |
@@ -97,6 +98,17 @@ Using:
 ```
 POST /repos/{owner}/{repo}/issues/{pr_number}/comments
 ```
+
+### **8. Merge conflicts can be resolved on request**
+
+If GitHub reports a merge conflict, the bot can leave a one-time offer comment in the PR.
+An authorized repository user or the PR author can then request help with:
+
+```text
+/pr-guardian resolve conflicts
+```
+
+The bot only attempts to push a conflict resolution commit after that explicit request.
 
 ---
 
@@ -180,6 +192,8 @@ LOG_LEVEL=info
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+When you configure the GitHub webhook, subscribe to both `Pull requests` and `Issue comments` so the merge-conflict command flow can work.
 
 ---
 

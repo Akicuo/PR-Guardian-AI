@@ -9,7 +9,15 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .config import get_settings
-from .github_app import is_trusted_repository_user
+from .github_app import get_pr_details, is_trusted_repository_user
+from .merge_conflicts import (
+    build_merge_conflict_offer_comment,
+    get_issue_comments,
+    is_authorized_conflict_requester,
+    is_merge_conflict_command,
+    merge_conflict_offer_already_posted,
+    try_resolve_pull_request_conflicts,
+)
 from .review_engine import (
     build_review_chunks_from_diff,
     collect_file_contexts,
@@ -115,6 +123,35 @@ async def post_pr_comment(comments_url: str, body: str) -> None:
         resp = await client.post(comments_url, headers=headers, json=payload)
         logger.info(f"Post comment status: {resp.status_code}")
         resp.raise_for_status()
+
+
+async def maybe_offer_merge_conflict_help(
+    comments_url: str,
+    repo_owner: str,
+    repo_name: str,
+    pr_number: int,
+) -> None:
+    try:
+        pr_details = await get_pr_details(repo_owner, repo_name, pr_number)
+    except Exception:
+        logger.warning("Failed to fetch PR details for merge conflict offer", exc_info=True)
+        return
+
+    mergeable = pr_details.get("mergeable")
+    mergeable_state = str(pr_details.get("mergeable_state", "")).lower()
+    if mergeable is not False and mergeable_state != "dirty":
+        return
+
+    try:
+        existing_comments = await get_issue_comments(comments_url)
+    except Exception:
+        logger.warning("Failed to inspect existing PR comments for merge conflict offer", exc_info=True)
+        return
+
+    if merge_conflict_offer_already_posted(existing_comments):
+        return
+
+    await post_pr_comment(comments_url, build_merge_conflict_offer_comment(settings.bot_name))
 
 
 async def review_diff_with_ai(
@@ -238,6 +275,13 @@ async def webhook(
             )
             return JSONResponse({"msg": "ignored untrusted PR author"})
 
+        await maybe_offer_merge_conflict_help(
+            comments_url=comments_url,
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            pr_number=pr_number,
+        )
+
         # Fetch diff
         try:
             diff_text = await fetch_pr_diff(diff_url)
@@ -292,6 +336,104 @@ async def webhook(
 
         logger.info(f">>> Successfully posted AI review to {repo_full_name}#{pr_number}")
         return JSONResponse({"msg": "AI review posted"})
+
+    if x_github_event == "issue_comment":
+        action = payload.get("action")
+        if action != "created":
+            logger.info("Ignoring issue_comment action: %s", action)
+            return JSONResponse({"msg": f"ignored action {action}"})
+
+        issue = payload.get("issue", {})
+        if "pull_request" not in issue:
+            logger.info("Ignoring issue comment because it is not on a pull request")
+            return JSONResponse({"msg": "ignored non-pr issue comment"})
+
+        comment = payload.get("comment", {})
+        comment_body = str(comment.get("body", ""))
+        if not is_merge_conflict_command(comment_body, settings.bot_name):
+            logger.info("Ignoring issue comment because it is not a merge conflict command")
+            return JSONResponse({"msg": "ignored non-command issue comment"})
+
+        repo_owner = payload.get("repository", {}).get("owner", {}).get("login", "")
+        repo_name = payload.get("repository", {}).get("name", "")
+        repo_full_name = payload.get("repository", {}).get("full_name", "")
+        pr_number = int(issue.get("number", 0))
+        commenter_login = comment.get("user", {}).get("login", "")
+        commenter_association = comment.get("author_association", "")
+
+        try:
+            pr_details = await get_pr_details(repo_owner, repo_name, pr_number)
+        except Exception as e:
+            logger.exception("Failed to fetch PR details for issue comment")
+            raise HTTPException(status_code=500, detail="Failed to fetch PR details") from e
+
+        pr_author_login = pr_details.get("user", {}).get("login", "")
+        authorized_requester = await is_authorized_conflict_requester(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            username=commenter_login,
+            author_association=commenter_association,
+            pr_author_username=pr_author_login,
+        )
+        if not authorized_requester:
+            logger.info(
+                "Ignoring merge conflict request on %s#%s from unauthorized user %s",
+                repo_full_name,
+                pr_number,
+                commenter_login or "unknown",
+            )
+            return JSONResponse({"msg": "ignored unauthorized merge conflict request"})
+
+        comments_url = pr_details.get("comments_url") or issue.get("comments_url")
+        mergeable = pr_details.get("mergeable")
+        mergeable_state = str(pr_details.get("mergeable_state", "")).lower()
+        if mergeable is not False and mergeable_state != "dirty":
+            await post_pr_comment(
+                comments_url,
+                (
+                    f"## Merge Conflict Help from {settings.bot_name}\n\n"
+                    "This pull request does not currently report merge conflicts, so there is nothing for me to resolve right now."
+                ),
+            )
+            return JSONResponse({"msg": "no merge conflicts detected"})
+
+        try:
+            resolution = await try_resolve_pull_request_conflicts(
+                repo_owner=repo_owner,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                pr_details=pr_details,
+            )
+        except Exception as e:
+            logger.exception("Failed while attempting merge conflict resolution")
+            raise HTTPException(status_code=500, detail="Failed to resolve merge conflicts") from e
+
+        lines = [
+            f"## Merge Conflict Help from {settings.bot_name}",
+            "",
+            resolution.message,
+        ]
+        if resolution.resolved_files:
+            lines.extend(
+                [
+                    "",
+                    "**Resolved files:**",
+                    *[f"- `{path}`" for path in resolution.resolved_files],
+                ]
+            )
+        if resolution.skipped_files:
+            lines.extend(
+                [
+                    "",
+                    "**Still needs manual attention:**",
+                    *[f"- `{path}`" for path in resolution.skipped_files[:10]],
+                ]
+            )
+        if resolution.commit_sha:
+            lines.extend(["", f"Commit: `{resolution.commit_sha}`"])
+
+        await post_pr_comment(comments_url, "\n".join(lines))
+        return JSONResponse({"msg": "merge conflict request processed"})
 
     logger.info(f"Unhandled event: {x_github_event}")
     return JSONResponse({"msg": f"unhandled event {x_github_event}"})
